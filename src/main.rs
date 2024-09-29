@@ -1,17 +1,17 @@
-// use axum::{extract::Path, routing::get};
-// use tokio::net::TcpListener;
-
-// async fn double(Path(input): Path<String>) -> String {
-//     match input.parse::<i32>() {
-//         Ok(num) => format!("{} times 2 is {}!", num, num * 2),
-//         Err(e) => format!("Uh oh, weird input: {e}")
-//     }
-// }
+use axum::{extract::Path, routing::get};
+use std::sync::Mutex;
+use tokio::net::TcpListener;
 
 const RANDOM_WORDS: [&str; 6] =
     ["MB", "Windy", "Gnomes", "Johnny", "Seoul", "Interesting"];
 
-#[derive(Clone, Debug, Default)]
+static GAME: Mutex<GameApp> = Mutex::new(GameApp {
+    current_word: String::new(),
+    right_guesses: vec![],
+    wrong_guesses: vec![],
+});
+
+#[derive(Clone, Debug)]
 struct GameApp {
     current_word: String,
     right_guesses: Vec<char>,
@@ -24,8 +24,12 @@ enum Guess {
     AlreadyGuessed,
 }
 
+async fn get_res_from_static(Path(guess): Path<String>) -> String {
+    GAME.lock().unwrap().take_guess(guess)
+}
+
 impl GameApp {
-    fn start(&mut self) {
+    fn restart(&mut self) {
         self.current_word =
             RANDOM_WORDS[fastrand::usize(..RANDOM_WORDS.len())].to_lowercase();
         self.right_guesses.clear();
@@ -41,82 +45,64 @@ impl GameApp {
             false => Guess::Wrong,
         }
     }
-    fn print_results(&self) {
-        let output = self
-            .current_word
-            .chars()
-            .map(|c| {
-                if self.right_guesses.contains(&c) {
-                    c
-                } else {
-                    '*'
-                }
-            })
-            .collect::<String>();
-        println!("{output}");
+    fn results_so_far(&self) -> String {
+        let mut output = String::new();
+        for c in self.current_word.chars() {
+            if self.right_guesses.contains(&c) {
+                output.push(c);
+            } else {
+                output.push('*');
+            }
+        }
+        output
     }
-    fn take_guess(&mut self, guess: String) {
-        match guess.chars().count() {
-            0 => println!("What are you doing? Please guess something"),
-            1 => {
+    fn take_guess(&mut self, guess: String) -> String {
+        let guess = guess.to_lowercase();
+        let mut output = String::new();
+        match guess {
+            guess if guess.chars().count() == 1 => {
                 let the_guess = guess.chars().next().unwrap();
 
                 match self.check_guesses(the_guess) {
                     Guess::AlreadyGuessed => {
-                        println!("You already guessed {the_guess}!");
+                        output.push_str(&format!("You already guessed {the_guess}!\n"));
                     }
                     Guess::Right => {
                         self.right_guesses.push(the_guess);
-                        println!("Yes, it contains a {the_guess}!");
+                        output.push_str(&format!("Yes, it contains a {the_guess}!\n"));
                     }
                     Guess::Wrong => {
                         self.wrong_guesses.push(the_guess);
-                        println!("Nope, it doesn't contain a {the_guess}!")
+                        output.push_str(&format!("Nope, it doesn't contain a {the_guess}!\n"));
                     }
                 }
-                self.print_results();
-                println!(
-                    "Already guess: {}",
-                    self.wrong_guesses.iter().collect::<String>()
-                );
+                output.push_str(&self.results_so_far());
             }
-            _ => {
+            guess => {
                 if self.current_word == guess {
-                    println!("You guessed right, it's {}!", self.current_word);
+                    output.push_str(&format!("You guessed right, it's {}!  Let's plan again!", self.current_word));
                 } else {
-                    println!("Bzzt! It's not '{guess}', it's {}.\nTime to move on to another word!",
-                             self.current_word
-                    );
+                    output.push_str(&format!("Bzzt! It's not '{guess}', it's {}.\nTime to move on to another word!",
+                                             self.current_word
+                    ));
                 }
-                self.start();
+                self.restart();
             }
         }
+        output
     }
 }
 
-fn main() {
-    let mut app = GameApp::default();
-    app.start();
+#[tokio::main]
+async fn main() {
+    GAME.lock().unwrap().restart();
 
-    loop {
-        println!("Guess the word!");
-        let mut guess = String::new();
-        std::io::stdin().read_line(&mut guess).unwrap();
-        app.take_guess(guess.trim().to_lowercase());
-    }
+    let app = axum::Router::new()
+        .route("/", get(|| async { "The server is running well!" }))
+        .route("/game/:guess", get(get_res_from_static));
+
+    let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
+    axum::serve(listener, app)
+        .await
+        .unwrap();
 }
-
-// #[tokio::main]
-// async fn main() {
-//     let app = axum::Router::new()
-//         .route("/", get(|| async { "The server works!" }))
-//         .route("/game/:guess",
-//                get(|Path(guess): Path<String>| async move { format!("The guess is {guess}") }),
-//         )
-//         .route("/double/:number", get(double));
-//
-//     let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
-//     axum::serve(listener, app)
-//         .await
-//         .unwrap();
-// }
